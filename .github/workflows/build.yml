@@ -1,0 +1,151 @@
+# Build ARMv7 wheels of mitmproxy_rs (the Rust part of mitmproxy), which
+# upstream does not publish for 32-bit ARM, and release them.
+name: Build mitmproxy_rs for ARMv7
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: mitmproxy_rs version (empty = latest on PyPI)
+        required: false
+      force:
+        description: Rebuild even if a release for this version exists
+        type: boolean
+        default: false
+  schedule:
+    - cron: "41 4 * * 2" # weekly, Tuesday 04:41 UTC
+  push:
+    branches: [main]
+    paths: [".github/workflows/build.yml"]
+
+permissions:
+  contents: write
+
+jobs:
+  resolve:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      build: ${{ steps.v.outputs.build }}
+    steps:
+      - id: v
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_VERSION: ${{ inputs.version }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          version="$INPUT_VERSION"
+          if [ -z "$version" ]; then
+            version=$(curl -fsS https://pypi.org/pypi/mitmproxy-rs/json | jq -r .info.version)
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if gh release view "v$version" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 && [ "$FORCE" != "true" ]; then
+            echo "release v$version exists, nothing to build"
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    needs: resolve
+    if: needs.resolve.outputs.build == 'true'
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: armv7-unknown-linux-gnueabihf
+            manylinux: "2014"
+            name: glibc
+          - target: armv7-unknown-linux-musleabihf
+            manylinux: musllinux_1_2
+            name: musl
+    env:
+      VERSION: ${{ needs.resolve.outputs.version }}
+    steps:
+      - name: Fetch and verify the sdist from PyPI
+        run: |
+          meta=$(curl -fsS "https://pypi.org/pypi/mitmproxy-rs/$VERSION/json")
+          url=$(echo "$meta" | jq -r '.urls[] | select(.packagetype=="sdist") | .url')
+          sha=$(echo "$meta" | jq -r '.urls[] | select(.packagetype=="sdist") | .digests.sha256')
+          curl -fsSL -o sdist.tar.gz "$url"
+          echo "$sha  sdist.tar.gz" | sha256sum -c -
+          tar xzf sdist.tar.gz
+          mv "mitmproxy_rs-$VERSION" src
+
+      - name: Drop the mitmproxy-linux dependency
+        # mitmproxy-linux is the eBPF redirector for local capture mode and has
+        # no 32-bit ARM build; all other modes work without it.
+        run: |
+          sed -i '/mitmproxy_linux==/d' src/pyproject.toml
+          ! grep -n mitmproxy_linux src/pyproject.toml
+
+      - name: Build wheel
+        uses: PyO3/maturin-action@v1
+        with:
+          working-directory: src
+          target: ${{ matrix.target }}
+          manylinux: ${{ matrix.manylinux }}
+          rust-toolchain: stable
+          args: --release --out ../dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.name }}
+          path: dist/*.whl
+
+  test:
+    needs: [resolve, build]
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: glibc
+            image: python:3.13-slim
+          - name: musl
+            image: python:3.13-alpine
+    steps:
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm
+      - uses: actions/download-artifact@v4
+        with:
+          name: wheel-${{ matrix.name }}
+          path: dist
+      - name: Import test on emulated ARMv7
+        run: |
+          docker run --rm --platform linux/arm/v7 -v "$PWD/dist:/dist" ${{ matrix.image }} sh -c '
+            set -e
+            uname -m
+            pip install --no-index --find-links /dist mitmproxy_rs
+            python -c "import mitmproxy_rs; from mitmproxy_rs import wireguard as wg; print(mitmproxy_rs.__file__); print(wg.pubkey(wg.genkey()))"
+          '
+
+  release:
+    needs: [resolve, test]
+    runs-on: ubuntu-24.04
+    env:
+      VERSION: ${{ needs.resolve.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wheel-*
+          merge-multiple: true
+          path: dist
+      - run: cd dist && sha256sum *.whl > SHA256SUMS && cat SHA256SUMS
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ env.VERSION }}
+          name: mitmproxy_rs ${{ env.VERSION }} for ARMv7
+          body: |
+            Unofficial ARMv7 (32-bit ARM, hard-float) wheels of
+            [mitmproxy_rs ${{ env.VERSION }}](https://pypi.org/project/mitmproxy-rs/${{ env.VERSION }}/),
+            built from the PyPI sdist.
+
+            - `manylinux` wheel: glibc systems (Raspberry Pi OS, Debian/Ubuntu armhf)
+            - `musllinux` wheel: musl systems (Alpine)
+
+            Built without the `mitmproxy-linux` dependency, so `mitmproxy --mode local`
+            is not available; all other modes work.
+          files: dist/*
