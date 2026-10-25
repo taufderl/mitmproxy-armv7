@@ -63,6 +63,10 @@ jobs:
     env:
       VERSION: ${{ needs.resolve.outputs.version }}
     steps:
+      - uses: actions/checkout@v4
+        with:
+          path: repo
+
       - name: Fetch and verify the sdist from PyPI
         run: |
           meta=$(curl -fsS "https://pypi.org/pypi/mitmproxy-rs/$VERSION/json")
@@ -73,12 +77,15 @@ jobs:
           tar xzf sdist.tar.gz
           mv "mitmproxy_rs-$VERSION" src
 
-      - name: Drop the mitmproxy-linux dependency
+      - name: Apply patches
         # mitmproxy-linux is the eBPF redirector for local capture mode and has
         # no 32-bit ARM build; all other modes work without it.
         run: |
-          sed -i '/mitmproxy_linux==/d' src/pyproject.toml
-          ! grep -n mitmproxy_linux src/pyproject.toml
+          for p in repo/patches/*.patch; do
+            echo "applying $p"
+            patch -p1 --forward -d src < "$p"
+          done
+          ! grep -n 'mitmproxy_linux' src/pyproject.toml src/mitmproxy-rs/src/lib.rs
 
       - name: Build wheel
         uses: PyO3/maturin-action@v1

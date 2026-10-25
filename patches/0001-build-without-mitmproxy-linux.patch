@@ -1,0 +1,28 @@
+Build without mitmproxy-linux
+
+mitmproxy-linux is the eBPF redirector for "mitmproxy --mode local". It has
+no 32-bit ARM build. Drop it from the dependencies and do not import it when
+the module loads; local mode still imports it lazily and then fails with an
+ImportError, all other modes work.
+
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -18,7 +18,6 @@ classifiers = [
+
+ dependencies = [
+     "mitmproxy_windows==0.12.15; os_name == 'nt'",
+-    "mitmproxy_linux==0.12.15; sys_platform == 'linux'",
+     "mitmproxy_macos==0.12.15; sys_platform == 'darwin'",
+ ]
+
+--- a/mitmproxy-rs/src/lib.rs
++++ b/mitmproxy-rs/src/lib.rs
+@@ -123,8 +123,6 @@
+         // Import platform-specific modules here so that missing dependencies are raising immediately.
+         #[cfg(target_os = "macos")]
+         m.py().import("mitmproxy_macos")?;
+-        #[cfg(all(target_os = "linux", not(feature = "docs")))]
+-        m.py().import("mitmproxy_linux")?;
+         #[cfg(windows)]
+         m.py().import("mitmproxy_windows")?;
+ 

@@ -32,9 +32,11 @@ cross-compiles it with [maturin-action](https://github.com/PyO3/maturin-action).
 The wheels are smoke-tested on emulated ARMv7 (import, WireGuard key generation)
 before release. A weekly run picks up new upstream versions.
 
-One change to upstream: the dependency on `mitmproxy-linux` is dropped. It is the
-eBPF redirector for `mitmproxy --mode local`, which has no 32-bit ARM build.
-All other modes (regular, transparent, reverse, SOCKS, WireGuard) work.
+One change to upstream ([`patches/`](patches)): `mitmproxy-linux` is neither a
+dependency nor imported when the module loads. It is the eBPF redirector for
+`mitmproxy --mode local`, which has no 32-bit ARM build; local mode raises an
+ImportError, all other modes (regular, transparent, reverse, SOCKS, WireGuard)
+work.
 
 ## OpenWrt
 
