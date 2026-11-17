@@ -16,7 +16,7 @@ on:
     - cron: "41 4 * * 2" # weekly, Tuesday 04:41 UTC
   push:
     branches: [main]
-    paths: [".github/workflows/build.yml"]
+    paths: [".github/workflows/build.yml", "patches/**"]
 
 permissions:
   contents: write
@@ -63,7 +63,7 @@ jobs:
     env:
       VERSION: ${{ needs.resolve.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           path: repo
 
@@ -77,15 +77,10 @@ jobs:
           tar xzf sdist.tar.gz
           mv "mitmproxy_rs-$VERSION" src
 
-      - name: Apply patches
+      - name: Strip mitmproxy-linux
         # mitmproxy-linux is the eBPF redirector for local capture mode and has
         # no 32-bit ARM build; all other modes work without it.
-        run: |
-          for p in repo/patches/*.patch; do
-            echo "applying $p"
-            patch -p1 --forward -d src < "$p"
-          done
-          ! grep -n 'mitmproxy_linux' src/pyproject.toml src/mitmproxy-rs/src/lib.rs
+        run: sh repo/patches/strip-mitmproxy-linux.sh src
 
       - name: Build wheel
         uses: PyO3/maturin-action@v1
@@ -96,7 +91,7 @@ jobs:
           rust-toolchain: stable
           args: --release --out ../dist
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: wheel-${{ matrix.name }}
           path: dist/*.whl
@@ -113,10 +108,10 @@ jobs:
           - name: musl
             image: python:3.13-alpine
     steps:
-      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-qemu-action@v4
         with:
           platforms: arm
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: wheel-${{ matrix.name }}
           path: dist
@@ -135,13 +130,13 @@ jobs:
     env:
       VERSION: ${{ needs.resolve.outputs.version }}
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: wheel-*
           merge-multiple: true
           path: dist
       - run: cd dist && sha256sum *.whl > SHA256SUMS && cat SHA256SUMS
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           tag_name: v${{ env.VERSION }}
           name: mitmproxy_rs ${{ env.VERSION }} for ARMv7
