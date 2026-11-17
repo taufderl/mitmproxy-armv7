@@ -17,6 +17,10 @@ on:
   push:
     branches: [main]
     paths: [".github/workflows/build.yml", "patches/**"]
+  # Build and test (but do not release) changes to the build, such as
+  # Dependabot action bumps.
+  pull_request:
+    paths: [".github/workflows/build.yml", "patches/**"]
 
 permissions:
   contents: write
@@ -33,13 +37,17 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           INPUT_VERSION: ${{ inputs.version }}
           FORCE: ${{ inputs.force }}
+          EVENT: ${{ github.event_name }}
         run: |
           version="$INPUT_VERSION"
           if [ -z "$version" ]; then
             version=$(curl -fsS https://pypi.org/pypi/mitmproxy-rs/json | jq -r .info.version)
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          if gh release view "v$version" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 && [ "$FORCE" != "true" ]; then
+          if [ "$EVENT" = "pull_request" ]; then
+            echo "pull request, building v$version without releasing"
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          elif gh release view "v$version" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 && [ "$FORCE" != "true" ]; then
             echo "release v$version exists, nothing to build"
             echo "build=false" >> "$GITHUB_OUTPUT"
           else
@@ -126,6 +134,7 @@ jobs:
 
   release:
     needs: [resolve, test]
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
     env:
       VERSION: ${{ needs.resolve.outputs.version }}
